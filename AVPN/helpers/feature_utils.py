@@ -57,6 +57,41 @@ def load_wav(path: str, target_sr: int = DEFAULT_SR) -> np.ndarray:
     return signal
 
 
+def trim_silence(signal: np.ndarray,
+                 top_db: float = 35.0,
+                 min_duration: float = 0.0,
+                 sr: int = DEFAULT_SR) -> np.ndarray:
+    """Trim leading/trailing sections that are far below peak energy.
+
+    Args:
+        signal: Input waveform (mono)
+        top_db: Threshold in decibels relative to peak (default 35 dB)
+        min_duration: Minimum duration to keep after trimming (seconds)
+        sr: Sample rate used to interpret ``min_duration``
+
+    Returns:
+        Trimmed waveform. Falls back to original if trimming removes
+        everything or drops below ``min_duration``.
+    """
+    if signal.size == 0:
+        return signal
+
+    try:
+        trimmed, idx = librosa.effects.trim(signal, top_db=top_db)
+    except Exception:
+        # If librosa fails (e.g. short clip), return original
+        return signal
+
+    if trimmed.size == 0:
+        return signal
+
+    if min_duration > 0:
+        if trimmed.shape[0] < int(min_duration * sr):
+            return signal
+
+    return trimmed.astype(np.float32, copy=False)
+
+
 def frame_signal(x: np.ndarray, sr: int, win_ms: float = DEFAULT_WIN_MS,
                  hop_ms: float = DEFAULT_HOP_MS, 
                  window: str = "hamming") -> np.ndarray:

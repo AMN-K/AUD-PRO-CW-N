@@ -26,12 +26,6 @@ The script will:
 5. Show confidence scores
 """
 
-
-# python tasks/demo_test.py --pattern "Audio_test/*.wav" --true-label charlie
-
-
-
-
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -49,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from helpers.feature_utils import (
     load_wav,
+    trim_silence,
     frame_signal,
     mfcc_from_frames,
     add_deltas,
@@ -84,10 +79,14 @@ def extract_features_from_audio(audio_path, max_frames, sr=16000, win_ms=25, hop
         keep_mfcc: Number of MFCC coefficients (default 40)
         
     Returns:
-        features: (120, max_frames, 1) shaped array ready for model
+        features: Array of shape (num_windows, 120, max_frames, 1).
+        starts:   1D array with the starting frame index for each window.
     """
     # Load audio (mono, 16kHz)
     signal = load_wav(str(audio_path), target_sr=sr)
+    trimmed = trim_silence(signal, top_db=35.0, min_duration=0.3, sr=sr)
+    if trimmed.size >= int(0.4 * sr):
+        signal = trimmed
     
     # Frame the signal (25ms window, 10ms hop, Hamming)
     frames = frame_signal(signal, sr, win_ms=win_ms, hop_ms=hop_ms)
@@ -97,17 +96,40 @@ def extract_features_from_audio(audio_path, max_frames, sr=16000, win_ms=25, hop
     
     # Add Δ and ΔΔ → 120 features (40 + 40 + 40)
     feat_120 = add_deltas(mfcc, order=2, width=2)  # Shape: (num_frames, 120)
-    
-    # Pad or truncate to max_frames
-    feat_padded = pad_features(feat_120, max_frames)  # Shape: (max_frames, 120)
-    
-    # Transpose to (120, max_frames) to match training format
-    feat_transposed = feat_padded.T  # Shape: (120, max_frames)
-    
-    # Add channel dimension
-    features = feat_transposed[..., np.newaxis]  # Shape: (120, max_frames, 1)
-    
-    return features
+
+    num_frames = feat_120.shape[0]
+
+    windows = []
+    starts = []
+    if num_frames <= max_frames:
+        feat_padded = pad_features(feat_120, max_frames)
+        windows.append(feat_padded)
+        starts.append(0)
+    else:
+        frame_energy = np.linalg.norm(feat_120, axis=1)
+        max_energy = np.max(frame_energy)
+        energy_threshold = 0.3 * max_energy if max_energy > 0 else 0
+        active = np.where(frame_energy >= energy_threshold)[0]
+
+        first_start = 0
+        center_start = max((active[0] + active[-1]) // 2 - max_frames // 2, 0) if active.size else 0
+        last_start = max(num_frames - max_frames, 0)
+
+        candidate_starts = {first_start, center_start, last_start}
+        if active.size:
+            candidate_starts.add(max(active[0] - max_frames // 4, 0))
+            candidate_starts.add(max(active[-1] - max_frames // 2, 0))
+
+        for start_idx in sorted(candidate_starts):
+            start_idx = max(0, min(start_idx, num_frames - max_frames))
+            window_feat = feat_120[start_idx:start_idx + max_frames]
+            if window_feat.shape[0] < max_frames:
+                window_feat = pad_features(window_feat, max_frames)
+            windows.append(window_feat)
+            starts.append(start_idx)
+
+    window_arrays = [window.T[..., np.newaxis].astype(np.float32) for window in windows]
+    return np.stack(window_arrays, axis=0), np.array(starts, dtype=np.int32)
 
 
 def normalize_features(features, train_mean, train_std):
@@ -134,26 +156,40 @@ def predict_speaker(audio_path, model, label_to_idx, idx_to_label, max_frames,
         confidence: Prediction confidence (0-1)
         all_probs: Probability for each speaker
     """
-    # Extract features
-    features = extract_features_from_audio(audio_path, max_frames)
-    
-    # Normalize if stats provided
+    feature_batch, frame_starts = extract_features_from_audio(audio_path, max_frames)
+
     if train_mean is not None and train_std is not None:
-        features = normalize_features(features, train_mean, train_std)
-    
-    # Add batch dimension
-    features = features[np.newaxis, ...]  # Shape: (1, 120, max_frames, 1)
-    
-    # Predict
-    predictions = model.predict(features, verbose=0)
-    
-    # Get predicted class and confidence
-    predicted_idx = np.argmax(predictions[0])
-    confidence = predictions[0][predicted_idx]
+        feature_batch = normalize_features(feature_batch, train_mean, train_std)
+
+    predictions = model.predict(feature_batch, verbose=0)
+
+    mean_probs = predictions.mean(axis=0)
+    best_window_idx = int(np.argmax(predictions.max(axis=1)))
+    best_probs = predictions[best_window_idx]
+    blended_probs = 0.7 * best_probs + 0.3 * mean_probs
+
+    # Check early windows (close to start of detected speech)
+    earliest_start = int(frame_starts.min())
+    early_mask = frame_starts <= earliest_start + max_frames // 4
+    early_indices = np.where(early_mask)[0]
+
+    override_probs = None
+    if early_indices.size:
+        early_scores = predictions[early_indices]
+        early_best_idx = early_indices[int(np.argmax(early_scores.max(axis=1)))]
+        early_probs = predictions[early_best_idx]
+        early_label = int(np.argmax(early_probs))
+        early_conf = float(early_probs[early_label])
+        if early_conf >= 0.6 and early_label != int(np.argmax(blended_probs)):
+            override_probs = 0.7 * early_probs + 0.3 * blended_probs
+
+    final_probs = override_probs if override_probs is not None else blended_probs
+
+    predicted_idx = int(np.argmax(final_probs))
+    confidence = float(final_probs[predicted_idx])
     predicted_name = idx_to_label[predicted_idx]
     
-    # Get all probabilities
-    all_probs = {idx_to_label[i]: predictions[0][i] for i in range(len(predictions[0]))}
+    all_probs = {idx_to_label[i]: float(final_probs[i]) for i in range(len(final_probs))}
     
     return predicted_name, confidence, all_probs
 
