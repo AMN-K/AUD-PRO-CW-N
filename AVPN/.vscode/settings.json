@@ -1,0 +1,51 @@
+{
+  "files.watcherExclude": {
+    "**/data/**": true,
+    "**/features/**": true,
+    "**/models/**": true,
+    "**/results/**": true,
+    "**/archive/**": true,
+    "**/__pycache__/**": true,
+    "**/.pytest_cache/**": true,
+    "**/mfccs_data/**": true,
+    "**/Audio/**": true,
+    "**/Audio_noise/**": true,
+    "**/Audio_noisy/**": true,
+    "**/outputs/**": true,
+    "**/outputs_task4/**": true
+  },
+  "search.exclude": {
+    "**/data/**": true,
+    "**/features/**": true,
+    "**/models/**": true,
+    "**/results/**": true,
+    "**/archive/**": true,
+    "**/__pycache__/**": true,
+    "**/mfccs_data/**": true,
+    "**/Audio/**": true,
+    "**/Audio_noise/**": true,
+    "**/Audio_noisy/**": true,
+    "**/outputs/**": true,
+    "**/outputs_task4/**": true
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true
+  },
+  "python.analysis.exclude": [
+    "data/**",
+    "features/**",
+    "models/**",
+    "results/**",
+    "archive/**",
+    "__pycache__/**",
+    "mfccs_data/**",
+    "Audio/**",
+    "Audio_noise/**",
+    "Audio_noisy/**",
+    "outputs/**",
+    "outputs_task4/**"
+  ],
+  "python.analysis.indexing": true,
+  "python.analysis.autoImportCompletions": true
+}
